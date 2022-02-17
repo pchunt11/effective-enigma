@@ -1,0 +1,218 @@
+---
+title: "MSSS Project"
+author: "Paul Hunt"
+date: "10/11/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pdftools)
+library(stringr)
+```
+
+```{r}
+format.file <- function(filename){
+  file <- read.delim(filename, encoding = 'UTF-8', quote = "")
+  
+  vec <- unlist(file)
+  names(vec) <- NULL
+  
+  words <- unlist(strsplit(vec, split = " "))
+  
+  nopunct <- gsub("[[:punct:][:blank:]]+", " ", words)
+  clean_words <- unlist(strsplit(nopunct, split = " "))
+  nospace <- gsub(rawToChar(as.raw("0xa0")), "", clean_words)
+  Hindi_words <- gsub("([A-Z]*[a-z]*[0-9]*)*", "", nospace)
+  
+  
+  str_subset(str_split(Hindi_words, " "), ".+")
+}
+```
+
+```{r}
+AT_files <- paste("Aaj_Tak/",list.files("Aaj_Tak"), sep = "")
+BBC_files <- paste("BBC/",list.files("BBC"), sep = "")
+
+AT <- unlist(sapply(AT_files[1:3], format.file))
+names(AT) <- NULL
+BBC <- unlist(sapply(BBC_files[1:3], format.file))
+names(BBC) <- NULL
+```
+
+
+```{r}
+AT_count <- sort(table(AT), decreasing = T)
+BBC_count <- sort(table(BBC), decreasing = T)
+
+c(AT_count[1:10], BBC_count[1:10])
+```
+
+```{r}
+freq_table <- function(counts){
+  freq <- numeric(max(counts))
+  for(i in 1:max(counts)){
+    freq[i] <- sum(counts == i)
+  }
+  freq
+}
+
+AT_freqs <- freq_table(AT_count)
+BBC_freqs <- freq_table(BBC_count)
+```
+
+Let:
+
+- $k \in \{\text{BBC}, \text{AT}\}$ represent the two sampling populations, BBC Hindi and Aaj Tak,
+
+- $N_k$ represent the true number of unique words in the lexicon of a given source,
+
+- $m_k \in \mathcal{I}$ represent the total number of unique words in a given sample,
+
+- $Y_i$ represent the number of words appearing $i$ times in the sample,
+
+- and $p_i$ represent the probability of observing a word $i$ times.
+
+We want an estimate for $Y_0$, or the number of words that the news source might use but do not appear in our sample, such that $\sum\limits_{i = 0}^\infty Y_i= N$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+m_AT <- sum(AT_freqs)
+m_BBC <- sum(BBC_freqs)
+```
+
+
+
+
+
+
+
+```{r}
+n <- length(BBC_freqs)
+P <- numeric(n)
+B <- rbeta(n, 1,1)
+
+P[1] <- B[1]
+for(i in 2:n){
+  P[i] <- B[i]*prod((1-B[1:(i-1)]))
+}
+
+Lik <- function(X, theta, sigma){
+  n <- sum(X)
+  counts <- table(X)
+  Y <- freq_table(counts)
+  m <- sum(Y)
+  
+  Y <- c(Y, rep(0, n-m))
+  
+  Prod1 <- 0
+  for (i in i:(m-1)){
+    Prod1 <- log(theta+i*sigma) +Prod1
+  }
+  
+  RF <- 0
+  for(i in 1:(n-1)){
+    RF <- log(theta+i) + RF
+  }
+  Prod2 <- 0
+  for (i in 1:n){
+    Prod2 <- lgamma(Y[i]+1)+Prod2
+  }
+  
+  Prod3 <- 0
+  for(i in 1:n){
+    RF2 <- 0
+    for(j in 1:(i-1)){
+      RF2 <- log(-sigma+i)+RF2
+    }
+    Prod3 <- Y[i]*(RF2 - lgamma(i+1))+Prod3
+  }
+  
+ LogLik <- lgamma(n+1)+Prod1-RF-Prod2+Prod3
+ c(Prod2, Prod3, Prod1, RF, LogLik)
+}
+
+Lik(BBC_freqs, 5000, 0.5)
+```
+
+
+```{r}
+rising.fac <- function(x, n, log = F){
+  if(log == F){
+    product <- x
+    for(i in 1:n){
+      product <- (x+i-1)*product
+    }
+  } else{
+    product <- log(x)
+    for(i in 1:n){
+      product <- log(x+i-1)+product
+    }
+  }
+  product
+}
+
+gfc.nc <- function(n, k, sigma, gamma){
+  summation <- 0
+  y<-numeric()
+  for(j in 0:k){
+    y[j+1] <- rising.fac(-sigma*j - gamma, n, log = T)
+    x <- (-1)^j + lchoose(k, j) + rising.fac(-sigma*j - gamma, n, log = T)
+    summation  <- x + log(1+exp(summation-x))
+  }
+  
+summation/gamma(k+1)
+}
+
+DP.post <- function(M, X, sigma, theta, add = 0){
+  n <- length(X)
+  m <- sum(table(X))
+  
+  Fac1 <- rising.fac(theta+1, n-1, log = T) - 
+    rising.fac(theta+1, n+add, log = T)
+  
+  lProd1 <- 0 
+  for(i in m:(m+M-1)){
+    lProd1 <- log(theta + i*sigma) + lProd1
+  }
+  
+  DP <- Fac1 + lProd1 - sigma^M + gfc.nc(add, M, sigma, -n+m*sigma)
+  c(DP, Fac1, lProd1, gfc.nc(add, M, sigma, -n+m*sigma))
+}
+
+DP.post(5000, BBC[1:10], 0.5, 1000)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

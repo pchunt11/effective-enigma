@@ -1,0 +1,679 @@
+---
+title: "Estimating the Number of Unique words used in BBC Hindi and Aaj Tak"
+author: "Paul Hunt"
+date: "December 15, 2021"
+font: Mukta
+output: 
+  pdf_document:
+    extra_dependencies: 
+    - polyglossia
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, include = F,
+                      cache = T)
+library(stringr)
+library(scales)
+library(kableExtra)
+```
+
+# Executive Summary
+
+This paper employs words from articles scraped from the front pages of the Hindi language news websites BBC Hindi and Aaj Tak to estimate the total number of unique words that might be used on each website and answer the question "Which website has a larger lexicon?"
+
+The analysis begins with simple linear models of the logged word counts against their frequencies, hoping to extrapolate the additional number of unused words from the intercept, but the models suffered from poor fit and violations of the assumption of linearity rendering them wholly inappropriate for inference. Then, a models are fit based upon the assumption of a multinomial sampling distribution. These models seem to reflect the observed patterns in the data much better, and inference proceeds from there.
+
+We find that the proportion of unobserved words (relative to the number of unique words in the sample) is much greater for Aaj Tak than for the BBC, but this finding was always likely since the sample size of individual words from Aaj Tak was much smaller. Based on the posterior predictive distribution from our multinomial model we find that the total number of words used by the BBC is almost certainly greater than the number used by Aaj Tak. However, a stochastic process building off of the posterior predictive distributions calls that result into question by artificially increasing the sample sizes with augmented data. This process was built off of too few observations to be conclusive, and the stochastic nature greatly increased the variance of the estimates, but it suggests that with a larger sample from Aaj Tak, the difference in total unique words might disappear entirely.
+
+These results may suggest a first step in informing some critical media studies of the differences in language and style between international news sources and domestic Indian sources, but the conclusions in this paper are too weak to be extrapolated beyond the sample.
+
+
+```{r format}
+format.file <- function(filename){
+  file <- read.delim(filename,
+                     encoding = 'UTF-8',
+                     quote = "")
+  
+  vec <- unlist(file)
+  names(vec) <- NULL
+  
+  words <- unlist(strsplit(vec, split = " "))
+  
+  nopunct <- gsub("[[:punct:][:blank:]]+",
+                  " ", words)
+  clean_words <- unlist(strsplit(nopunct, split = " "))
+  nospace <- gsub(rawToChar(as.raw("0xa0")),
+                  "", clean_words)
+  Hindi_words <- gsub("([A-Z]*[a-z]*[0-9]*)*",
+                      "", nospace)
+  
+  
+  str_subset(str_split(Hindi_words, " "), ".+")
+}
+```
+
+```{r Get_words}
+AT_files <- paste("Aaj_Tak/",list.files("Aaj_Tak"), sep = "")
+BBC_files <- paste("BBC/",list.files("BBC"), sep = "")
+
+AT <- unlist(sapply(AT_files[1:5], format.file))
+names(AT) <- NULL
+BBC <- unlist(sapply(BBC_files[1:5], format.file))
+names(BBC) <- NULL
+```
+
+```{r Words_counts}
+AT_count <- sort(table(AT), decreasing = T)
+BBC_count <- sort(table(BBC), decreasing = T)
+
+n_BBC <- length(BBC)
+n_AT  <- length(AT)
+```
+
+```{r Frequencies_counts}
+freq_table <- function(counts){
+  freq <- numeric(max(counts))
+  for(i in 1:max(counts)){
+    freq[i] <- sum(counts == i)
+  }
+  freq
+}
+```
+```{r}
+AT_freqs <- freq_table(AT_count)
+BBC_freqs <- freq_table(BBC_count)
+
+K_BBC <- sum(BBC_freqs)
+K_AT <- sum(AT_freqs)
+```
+
+# Full Analysis
+
+## Definitions
+For the purposes of this analysis, we are interested in the frequencies of unique word frequencies, which may lead to some confusion, so I open this description with some definitions as employed in this paper:
+
+- *Individual words* refers to observations of particular instances of the words, including repetitions of previously observed words.
+
+- *Unique words* refers to the words observed without counting repetitions, such that we may sample multiple individual observations of a unique word.
+
+- *Single words* refers to the words that are observed individually only once.
+
+- *Frequency* will hereafter denote the number of individual observations of a unique word, and
+
+- *Frequency counts* will denote the number of unique words observed at a given frequency.
+
+## Data Set
+
+My data set consists of the words in news articles scraped from the front pages of the BBC Hindi and Aaj Tak websites over the five days from December 5, 2021 to December 9. I have collected $n_{BBC} = `r comma(n_BBC)`$ individual words from the BBC, and $n_{AT} = `r comma(n_AT)`$ individual words from Aaj Tak, with $k_{BBC} =`r comma(K_BBC)`$ unique words from the BBC and $k_{AT} =`r comma(K_AT)`$ unique words from Aaj Tak.Both of these websites cover a wide variety of topics from Indian domestic politics and world events to sports and entertainment news, ensuring a sample of words specific to many domains. 
+
+To ensure that the samples of words from the two sources are reflective of our expectations, Table 1 gives the ten most frequent unique words in the sample for each website. As expected, the observations of high frequency words are very sparse with large gaps between the frequencies and no repeated frequencies. Additionally, the high frequency words are all grammatical particles, postpositions (the Hindi equivalent of English prepositions), forms of the copula *hona* ("to be"),  and conjunctions. 
+
+```{r Tbl1, include = TRUE}
+defBBC <- c("Gen. particle (pl.)", "in", "is",
+            "Gen. particle (f.)", "and", "to",
+            "from", "are", "Past tense particle",
+            "on")
+BBC10 <- cbind(Word = names(BBC_count[1:10]),
+               Frequency = BBC_count[1:10],
+               Definition = defBBC)
+rownames(BBC10) <- NULL
+
+defAT <- c("Gen. particle (pl.)", "in", "is",
+            "Gen. particle (f.)", "to", "from",
+            "and", "Past tense particle", "Gen. particle (m.)",
+            "are")
+AT10 <- cbind(Word = names(AT_count[1:10]),
+               Frequency = AT_count[1:10],
+               Definition = defAT)
+rownames(AT10) <- NULL
+cbind(BBC10, AT10) %>% kbl(booktabs = T, format = "latex", escape = T,
+                           caption = "Ten most frequent words in the BBC and AT samples")%>%
+  kable_classic()%>%
+  add_header_above(c("BBC"=3, "Aaj Tak" = 3))
+```
+
+After observing the highest frequency words, we want to check the distribution of lower frequency words and get a sense of the overall distribution of frequency counts in the dataset. Figure 1 plots the number of unique words with frequencies between 1 and 100, showing that the counts decrease at a rate approximating exponential decay. With most frequencies after 25 containing counts of either one or zero, and the gaps between ones growing larger at higher frequencies.
+
+```{r Freq_hist, include = T, fig.show = "hold", out.width="50%", fig.cap="Frequency counts of the first 100 frequencies. This plot has been truncated at 100 to illustrate the the observed pattern in frequency counts, but the frequencies extend beyond 1,000 for both samples."}
+
+par(oma = c(2,0,0,0), mar = c(4,4,4,2))
+plot(BBC_freqs, type = 'h',
+     xlim = c(1,100),
+     col = "blue",
+     main = "BBC Word Frequencies",
+     xlab = "Frequency",
+     ylab = "Frequency Count")
+par(oma = c(2,0,0,0), mar = c(4,4,4,2))
+plot(AT_freqs, type = 'h',
+     xlim = c(1,100),
+     col = "blue",
+     main = "Aaj Tak Word Frequencies",
+     xlab = "Frequency",
+     ylab = "")
+```
+
+After this cursory examination of the data, we turn to methods of modeling the count of unique words at frequency zero, which represents the number of words in the lexicon of each source not captured by our sample.
+
+## Linear Regression
+
+```{r Pois_reg}
+pois_reg <- function(y, x, repl = 1e+4, intercept = T){
+  if(intercept == T){
+    x <- cbind(rep(1, NROW(x)), x)
+  }
+  
+  n <- length(y)
+  p <- dim(x)[2]
+  
+  ## priors
+  p.beta <- c(y[1], -1)
+  psd.beta <- c(10000, 100)
+
+  var.prop <- var(log(y+1))*solve(t(x)%*%x)
+  
+  Beta <- matrix(numeric(),
+                 nrow = repl,
+                 ncol = p)
+  acc <- 0
+  beta <- p.beta
+  
+  for(i in 1:repl){
+    beta.prop <- (MASS::mvrnorm(1, beta, var.prop ))
+    max1 <- max(x%*%beta.prop)
+    max2 <- max(x%*%beta)
+    
+    lhr <- sum(dpois(y, max1+log(exp(x%*%beta.prop-max1)), log = T)) -
+             sum(dpois(y, max2+log(exp(x%*%beta-max2)), log = T)) +
+             sum(dnorm(beta.prop,p.beta, psd.beta, log = T)) -
+             sum(dnorm( beta, p.beta, psd.beta, log = T))
+             if(log(runif(1)) < lhr){beta <- beta.prop; acc<-acc + 1}
+    
+    Beta[i,] <- beta
+  }
+  
+  list(coef = Beta, acceptance = acc)
+}
+
+#BBC_pois <- pois_reg(BBC_freqs, log(1:length(BBC_freqs)))
+#AT_pois <- pois_reg(AT_freqs, log(1:length(AT_freqs)))
+```
+```{r z_mod}
+zellnor.lm <- function(y, x, prior, repl = 1e+5, intercept = T){
+  require(MASS, warn.conflicts = F)
+  
+  n <- length(y)
+  
+  if(intercept == T){
+    x <- cbind(rep(1, NROW(x)), x)
+  }
+  
+  attach(prior, warn.conflicts = F)
+  trace <- list(s2 = numeric(repl),
+                beta = array(NA, dim=c(repl,ncol(x))))
+  
+  XtX_inv <- solve(t(x) %*% x)
+
+  tmp_lm <- lm(y~x[,-1])
+  SSRg <- t(y) %*% y - g/(g+1) * t(y) %*% predict(tmp_lm)
+  
+  for(r in 1:repl){
+    # Sample Beta
+    s2 <- 1/rgamma(n=1, shape=(nu0+n)/2,
+                   rate=( nu0*s20 + SSRg)/2)
+    beta <- mvrnorm(n=1, mu = g/(g+1)*tmp_lm$coef,
+                  Sigma=g/(g+1) * s2 * XtX_inv)
+    
+    # Saving
+    trace$s2[r] <- s2
+    trace$beta[r,] <- beta
+  }
+  detach(prior)
+
+  return(trace)
+}
+```
+
+```{r log_lms}
+prior_BBC <- list(g = length(BBC_freqs),
+               nu0 = 2,
+               s20 = 2)
+prior_AT <- list(g = length(AT_freqs),
+               nu0 = 2,
+               s20 = 2)
+
+BBC_lm <- zellnor.lm(log(BBC_freqs+1), log(1:length(BBC_freqs)),
+                     prior_BBC)
+AT_lm <- zellnor.lm(log(AT_freqs+1), log(1:length(AT_freqs)),
+                     prior_AT)
+
+```
+
+Given the apparent exponential decay in in the data, a linear model of logged values for frequency counts (plus one to account for zeros) versus the the logged frequencies may be a reasonable initial model. In fact, a scatterplot of the logged values (Figure 2) seems to show a very strong linear relationship in the first half of the distribution, although this breaks down considerably as the counts greater than zero become more sparse. A well-fitting linear model would enjoy the benefit of including a parameter $\beta_0$ for the intercept, which we could interpret as an estimate for the number of words at frequency zero.
+
+I have elected to implement my regression with Zellner's g-prior (code given in the appendix), with $g = \max(\text{Frequency}>0)$ (i.e. the number of observations in the model), $\sigma^2_0=2$, and $\nu_0 = 2$. Posterior estimates are given in Table 2.
+
+```{r Lm_tbl, include = T}
+beta.BBC <- colMeans(BBC_lm$beta)
+beta.BBC.sd <- apply(BBC_lm$beta, 2, sd)
+beta.BBC.ci <- apply(BBC_lm$beta, 2, quantile, c(0.025, 0.975))
+
+beta.AT <- colMeans(AT_lm$beta)
+beta.AT.sd <- apply(AT_lm$beta, 2, sd)
+beta.AT.ci <- apply(AT_lm$beta, 2, quantile, c(0.025, 0.975))
+
+estimates.BBC <- cbind("Mean Coef." = beta.BBC,
+                     "S.D." = beta.BBC.sd, 
+                     t(beta.BBC.ci))
+rownames(estimates.BBC) <- c("Intercept", "Slope")
+
+estimates.AT <- cbind("Mean Coef." = beta.AT,
+                     "S.D." = beta.AT.sd, 
+                     t(beta.AT.ci))
+rownames(estimates.AT) <- c("Intercept", "Slope")
+
+rbind(estimates.BBC, estimates.AT)%>%kbl(booktabs = T, digits = 3,
+                                         caption = "Posterior coefficient estimates")%>%
+  kable_classic()%>%pack_rows("BBC",1,2)%>%pack_rows("AT",3,4)
+```
+
+```{r}
+int.BBC <- round(exp(beta.BBC.ci)[,1], 2)
+int.AT <- round(exp(beta.AT.ci)[,1], 2)
+```
+
+
+The slopes are negative, as anticipated, but a quick glance at figure 2 shows that the model underestimates the intercepts by far. This is most likely due to the high concentrations of zero-counts at the higher frequencies shrinking both the slope and intercept estimates. by exponentiating these intercepts, we get 95% credible estimates for $Y_{0,\text{BBC}} = (`r int.BBC`)$, and $Y_{0,\text{AT}} = (`r int.AT`)$, which are not at all reasonable. 
+
+```{r Scatter,  include = T, fig.show = "hold", out.width="50%", fig.cap="Scatter plots of log(frequency counts) vs. log(frequency) with mean lines of best fit of each source."}
+
+
+
+plot(log(1:length(BBC_freqs)), log(BBC_freqs+1),
+     main = "Aaj Tak",
+     ylab = "log(Frequency Counts +1)",
+     xlab = "log(Frequency)",
+     col = rgb(0,0,1, 0.25),
+     pch = 20)
+abline(a=beta.BBC[1], b=beta.BBC[2])
+
+plot(log(1:length(AT_freqs)), log(AT_freqs+1),
+     main = "Aaj Tak",
+     ylab = "",
+     xlab = "log(Frequency)",
+     col = rgb(0,0,1, 0.25),
+     pch = 20)
+abline(a=beta.AT[1], b=beta.AT[2])
+```
+
+
+
+```{r post_dist_lm,  include = T, fig.show = "hold", out.width="50%", fig.cap="Posterior distributions of slope and intercepts for BBC and AT."}
+plot(BBC_lm$beta,
+     main = "BBC",
+     ylab = "Slope",
+     xlab = "Intercept",
+     col = rgb(0,0,1,0.1),
+     pch = 20)
+plot(AT_lm$beta,
+     main = "Aaj Tak",
+     ylab = "",
+     xlab = "Intercept",
+     col = rgb(0,0,1,0.1),
+     pch = 20)
+```
+
+The posterior distributions of the slopes and intercepts show strong correlation, which is to be expected in a two-parameter linear model, and the MCMC diagnostic plots (in Appendix A) show good convergence of the Markov chain with autocorrelation not extending beyond the first lagged value. We might consider re-parameterizing our model to include a changepoint for a discontinuous regression model, but there is no theoretical justification for or interpretation of such a discontinuity. Instead we will turn to a multinomial distribution to represent the sampling distribution of the frequency counts.
+
+
+## Dirichlet-Multinomial Model
+
+A popular estimator for the coverage of a sample of discrete species (in this case unique words) is the Good-Turing estimator, which assumes that the proportion of unobserved words in the population is similar to the proportion of single words in the sample. This estimate is typically refined with some smoother, but here we will take a more naive approach. Hereafter, let:
+
+- $K$ be the number of unique words in a sample,
+
+- $i$ indicate frequency,
+
+- $Y_i$ denote the count of unique words appearing $i$ times in the sample,
+
+- $p_i$ indicate the proportion of unique words occurring $i$ times, and
+
+- $n$ be the sample size of individual words.
+
+We can assume $Y|n,k,p \sim \text{Multinomial}(n, k, p)$, or that frequency counts are assigned randomly to each frequency based on that particular frequency's $p_i$. Then, since the multinomial distribution is a multi-variate generalization of the binomial distribution, $p$ is distributed according to the Dirichlet distribution --the multivariate generalization of the beta distribution, or $p\sim\text{Dirichlet}(\alpha)$, where $\alpha$ is a vector of weights of length $\max(i)$. 
+
+Thus, we can derive a conjugate prior from:
+
+- $p(Y\mid p,n) = \prod\limits_{i = 1}^n p_i^{Y_i}$
+
+- $p(p) = \text{Dirichlet}(\alpha) = \frac{1}{\beta(\alpha)}\prod\limits_{i = 1}^n p_i^{\alpha_i-1}$
+
+- $p(p\mid Y) \propto \prod\limits_{i = 1}^n p_i^{Y_i}\prod\limits_{i = 1}^n p_i^{\alpha_i-1}$
+
+Which is the kernel of $\text{Dirichlet}(\alpha_i+Y_i)$
+
+In this analysis, I have set $\alpha$ to length $n$ in order to leave some weight on the unlikely possibility that only one unique word is sampled (i.e. $Y_n = 1$). After an initial trial with the flat prior $\alpha_i = 1$, which put too much weight on rare frequencies giving very small estimates of $p_1$. I have chosen instead to set $\alpha_i = \frac{1}{i}$ to approximate the rapid decay we expect to see in our observations.
+
+I have built a Monte Carlo sampler to draw $3,000$ posterior samples from $p\mid Y$ based on the algorithm:
+
+- $\gamma_i \sim \text{Gamma}(\alpha+Y_i,1)$
+
+- $p_i = \frac{\gamma_i}{\sum\limits_{i=1}^n\gamma_i}$
+
+
+
+```{r DM_prior}
+my_prior <- function(n){
+  alpha <- 1/1:n
+  alpha
+}
+
+BBC_prior <- my_prior(n_BBC)
+AT_prior <- my_prior(n_AT)
+```
+
+
+```{r DM_post}
+DM_post <- function(freqs, alpha_0 = 1, reps = 3e+3){
+  k <- sum(freqs)
+  m <- length(freqs)
+  n <- sum(freqs*1:m)
+  
+  freqs <- c(freqs, rep(0, n-m))
+  
+  gam_post <- matrix(rgamma(reps*n, alpha_0+freqs, 1),
+                    ncol = n, nrow = reps,
+                   byrow = T)
+  P_post <- matrix(numeric(n*reps),
+                   ncol = n, nrow = reps)
+  for(i in 1:reps){
+      P_post[i,] <- gam_post[i,]/sum(gam_post[i,])
+    }
+  P_post
+}
+
+
+BBC_post <- DM_post(BBC_freqs, BBC_prior)
+AT_post <- DM_post(AT_freqs, AT_prior)
+```
+
+
+
+```{r DM_plots,  include = T, fig.show = "hold", out.width="50%", fig.cap="Posterior means of the first 20 pi, with 95% error bars."}
+post_means_BBC <- colMeans(BBC_post)
+post_means_AT <- colMeans(AT_post)
+
+ci.p.BBC <- apply(BBC_post, 2, quantile, c(0.025, 0.975))
+ci.p.AT <- apply(AT_post, 2, quantile, c(0.025, 0.975))
+
+
+plot(post_means_BBC[1:30], type = "h",
+     xlim = c(0,20),
+     main = "BBC",
+     xlab = "Frequency",
+     ylab = "Posterior Proportion")
+points(1:30,ci.p.BBC[1,1:30], pch="--", col = "red")
+points(1:30,ci.p.BBC[2,1:30], pch="--", col = "red")
+points(post_means_BBC[1:30], col = "blue", pch = 20)
+
+plot(post_means_AT, type = "h",
+     xlim = c(0,20),
+     main = "Aaj Tak",
+     xlab = "Frequency",
+     ylab = "")
+points(1:30,ci.p.AT[1,1:30], pch="--", col = "red")
+points(1:30,ci.p.AT[2,1:30], pch="--", col = "red")
+points(post_means_AT, col = "blue", pch = 20)
+```
+
+Figure 4 illustrates the posterior distributions of the first $20$ $p_i$ for each source with means and 95% credible intervals, and Table 3 gives the same numbers for the first 5 $p_i$. $p_{1,\text{AT}}$ is clearly higher than $p_{1, \text{BBC}}$, with $Pr(p_{1,\text{AT}} > p_{1, \text{BBC}}) \approx 1$ from these samples. If we treat $p_1$ as an estimator for $p_0$, this is perfectly reasonable, since the source with the smaller sample size should have captured fewer of the possible unique words.
+
+```{r include = T}
+BBC5.pci <- rbind(ci.p.BBC[1,1:5],
+                  post_means_BBC[1:5],
+                  ci.p.BBC[2,1:5])
+colnames(BBC5.pci) <- c("$p_1$",
+                        "$p_2$",
+                        "$p_3$",
+                        "$p_4$",
+                        "$p_5$")
+rownames(BBC5.pci) <- c("2.5%", "mean", "97.5%")
+
+AT5.pci <- rbind(ci.p.AT[1,1:5],
+                  post_means_AT[1:5],
+                  ci.p.AT[2,1:5])
+colnames(AT5.pci) <- c(expression(p[1]),
+                        expression(p[2]),
+                        expression(p[3]),
+                        expression(p[4]),
+                        expression(p[5]))
+rownames(AT5.pci) <- c("2.5%", "mean", "97.5%")
+
+rbind(BBC5.pci, AT5.pci) %>% kbl(booktabs = T, digits = 3,
+                                 caption = "First 5 posterior $p_i$ for each sample.") %>%
+  kable_classic() %>% pack_rows("BBC",1,3)%>%pack_rows("Aaj Tak", 4,6)
+
+```
+
+
+
+
+
+
+```{r DM_post_pred}
+DM_post_pred <- function(freqs, post){
+  k <- sum(freqs)
+  m <- length(freqs)
+  n <- sum(freqs*1:m)
+  
+  Y_post <- matrix(numeric(n*nrow(post)), byrow =T,
+                   nrow = nrow(post),
+                   ncol = ncol(post))
+  Y_0 <- numeric(nrow(post))
+  for(i in 1:nrow(post)){
+    Y_post[i,] <- rmultinom(1, k, post[i,])
+    Y_0[i] <- rbinom(1,k,post[i,1])
+  }
+  N_post <- rowSums(Y_post)+Y_0
+  list(N = N_post, Y = Y_post, Y_0 = Y_0)
+}
+
+BBC_post_pred <- DM_post_pred(BBC_freqs, BBC_post)
+AT_post_pred <- DM_post_pred(AT_freqs, AT_post)
+```
+
+```{r, include = T}
+BBC_PP <- data.frame("Y_0" = c(quantile(BBC_post_pred$Y_0, 0.025),
+                                 mean(BBC_post_pred$Y_0),
+                                 quantile(BBC_post_pred$Y_0, 0.975)),
+                     "Y_1" = c(quantile(BBC_post_pred$Y[,1], 0.025),
+                                 mean(BBC_post_pred$Y[,1]),
+                                 quantile(BBC_post_pred$Y[,1], 0.975)),
+                     "N" = c(quantile(BBC_post_pred$N, 0.025),
+                                 mean(BBC_post_pred$N),
+                                 quantile(BBC_post_pred$N, 0.975)))
+rownames(BBC_PP) <- c("2.5%", "mean", "97.5%")
+
+AT_PP <- data.frame("Y_0" = c( quantile(AT_post_pred$Y_0, 0.025),
+                                   mean(AT_post_pred$Y_0),
+                               quantile(AT_post_pred$Y_0, 0.975)),
+                     "Y_1" = c(quantile(AT_post_pred$Y[,1], 0.025),
+                                   mean(AT_post_pred$Y[,1]),
+                               quantile(AT_post_pred$Y[,1], 0.975)),
+                     "N" = c(  quantile(AT_post_pred$N, 0.025),
+                                   mean(AT_post_pred$N),
+                               quantile(AT_post_pred$N, 0.975)))
+rownames(AT_PP) <- c("2.5%", "mean", "97.5%")
+
+rbind(BBC_PP, AT_PP)%>%kbl(digits = 2, booktabs = T,
+                           caption = "Posterior predictive means and quantiles for Y0, Y1, and N.",
+                           format.args = list(big.mark = ","))%>%
+  kable_classic()%>%pack_rows("BBC", 1,3)%>%pack_rows("Aaj Tak", 4,6)
+```
+
+```{r}
+Pr.ATgBBC <- round(mean(AT_post_pred$Y_0 > BBC_post_pred$Y_0), 2)
+```
+
+Following the intuition of this estimator, we can build a posterior predictive distribution by sampling $\tilde{Y}$ from $\text{Multinomial}(\tilde{Y}\mid p, Y)$, then estimate $N$, the total number of possible unique words, by sampling $\tilde{Y}_0$ from $\text{Binomial}(\tilde{Y}_0\mid k, p_1)$. Table 4 gives posterior predictive ranges for $\tilde{Y}_0, \tilde{Y}_1$ and the predicted value of $N$. We find that despite the higher proportion of undiscovered words in Aaj Tak, the BBC has a higher number of predicted total unique words and based on Monte Carlo integreation of this sample, $Pr(N_{\text{BBC}}>N_{\text{AT}}) \approx 1$. It is interesting to note that the estimated numbers of unobserved unique words are very similar, and $Pr(Y_{0,\text{AT}}>Y_{0,\text{BBC}}) = `r Pr.ATgBBC`$
+
+```{r naive_GT}
+naive_GT <- function(Y_post, M){
+  iter <- nrow(Y_post)
+  N <- numeric(iter)
+  p <- matrix(numeric(),
+               ncol = ncol(Y_post),
+               nrow = iter)
+  p1 <- matrix(numeric(),
+               ncol = M,
+               nrow = iter)
+  
+  x0 <- matrix(numeric(),
+               ncol = M,
+               nrow = iter)
+  x1 <- matrix(numeric(),
+               ncol = M,
+               nrow = iter)
+  new <- rep(0, iter)
+  for(i in 1:iter){
+    Y <- c(Y_post[i,])
+    N[i] <- sum(1:length(Y)*Y)
+    
+    p[i,] <- (1:length(Y)*Y)/N[i]
+    
+    for(j in 1:M){
+      x0[i,j] <-  rbinom(1, 1, p[i,1])
+      if(x0[i,j] == 1){
+        Y[1] <- Y[1] + 1
+        N[i] <- N[i] +1
+        p[i,] <-(1:length(Y)*Y)/N[i]
+        new[i] <- new[i] + 1
+      }else{
+        x <- rmultinom(1, 1, p[i,2:ncol(p)])
+        x1[i,j] <- which(x!=0)
+        if(Y[x1[i,j]] > 0){
+          Y[x1[i,j]] <- Y[x1[i,j]] - 1
+          Y[x1[i,j]+1] <- Y[x1[i,j]+1] + 1
+        }
+        N[i] <- N[i] + 1
+        }
+      }
+  }
+  K <- rowSums(Y_post) + new
+    list(K = K, p = p)
+}
+
+
+```
+
+```{r GT_results, cache.lazy = FALSE}
+M_BBC <- 100
+M_AT  <- n_BBC - n_AT + 100
+
+test <- sample(1:3000, 100)
+
+n_GT_BBC <- naive_GT(BBC_post_pred$Y[test,], M_BBC)
+
+n_GT_AT <- naive_GT(AT_post_pred$Y[test,], M_AT)
+```
+
+Another way to interpret the Good-Turing estimator is as the "discovery probability." Under this understanding, we augment the sample of $n$ individual words with a hypothetical additional sample of size $m$. Now, $p_0$ represents the probability that observation $n+m+1$ belongs to a previously unseen species. The estimate for $p_0$ is $\frac{Y_1}{n+m}$, and the estimate for this value belonging to a species previously observed $i$ times is $p_i = \frac{(i+1)Y_{i+1}}{n+m}$
+
+Since the different sample sizes from Aaj Tak and BBC seem to play a substantial role in the estimates of $N$, I have implemented a stochastic process to sample one value from $\text{Bernouli}(p_0)$, with the estimate constructed from  if the value is 1 then it represents a new unique word and I add 1 to $Y_1$ and $n$, and if not, then it is randomly assigned to another frequency $r$ according to the multinomial distribution. The value at $Y_{r}$ is decreased by 1 since one of its observations has changed frequencies, and $Y_{r+1}$ is increased by 1. 
+
+The implementation of this algorithm is very computationally inefficient, so I have only used 100 samples from the posterior predictive distribution and increased the samples from the BBC by $m_{\text{BBC}} = 100$ and the samples from Aaj Tak by $m_\text{AT}= n_{\text{BBC}}-n_{\text{AT}}+100$ to match. Due to the small number of samples, the results should be understood as exploratory rather than conclusive.
+
+```{r include = T}
+N_GT_BBC <- rbind(quantile(n_GT_BBC$K, 0.025),
+                      mean(n_GT_BBC$K),
+                  quantile(n_GT_BBC$K, 0.975))
+colnames(N_GT_BBC) <- "K BBC"
+rownames(N_GT_BBC) <- c("2.5%", "mean", "97.5%")
+N_GT_AT <- rbind(quantile(n_GT_AT$K, 0.025),
+                     mean(n_GT_AT$K),
+                 quantile(n_GT_AT$K, 0.975))
+colnames(N_GT_AT) <- "K Aaj Tak"
+cbind(N_GT_BBC, N_GT_AT)%>%kbl(booktabs = T, digits = 2,
+                               caption = "Stochastic process estimates of K.")%>%
+  kable_classic()
+```
+```{r}
+Pr.kgk <- mean(n_GT_BBC$K>n_GT_AT$K)
+```
+
+The results of the algorithm in Table 5 indicate that the centers of the distributions of $K_{n+m}$ may actually be much closer than the posterior predictive distributions alone suggest. Now, $Pr(K_{\text{n+m, BBC}}>K_{\text{n+m, BBC}})=`r Pr.kgk`$ which is too close to reach any conclusion about which website might use more unique words. It seems that our initial results may have simply been a function of the larger sample size from the BBC, and should be accepted only tentatively.
+
+## Discussion
+We have found that a log-linear model is insufficient to estimate the number of unobserved words due to the sparsity of high frequency observations. While it may be desirable to improve the model fit by adding a discontinuity since the interpretation of the intercept intercept as the number of unobserved unique is convenient, there is no reason to suspect that any such linear relationship truly exists, and I am suspicious of including model parameters with no real meaning.
+
+On the other hand, it is far more reasonable to assume that the frequencies of unique words can be sampled from a multinomial distribution. This does assume that the occurrence of the words are independent of one another --which is certainly not true of natural language-- but in the long run, the multinomial distribution does reflect the patterns we would expect to see. Our analysis of the posterior predictive distributions of word frequencies on the two websites lead us to conclude that the BBC probably employs a larger lexicon of unique words than Aaj Tak. However, a stochastic process based on the discovery probability indicates that the strength of that conclusion may largely be an artifact of the larger sample size from the BBC, and that further investigation is required.
+
+The multinomial model suffers from a dependence on $K$, the number of unique words in the sample, in the posterior predictive distribution which is difficult to overcome. We cannot treat $K$ as an unknown parameter, since it is a linear combination of the frequency counts and therefore not random once the data are known. Additionally, it is only observed once in each sample, making it impossible for us to explore its variation. Future work might employ hierarchical models with a more diverse dataset. For example, the samples might be divided into categories based on the topics of the articles in which the words originally appeared in order to understand how $K$ can change. Otherwise, the data could be examined from a nonparametric perspective employing Poisson-Dirichlet process models to analyse the discovery probability without making assumptions about the dimensions of $p$ or the hyper parameters.
+
+# Appendecies
+
+## Appendix A: Supplamental Figures
+```{r include=T}
+par(mfrow = c(2,2))
+plot(BBC_lm$beta[,1], type = "l",
+     ylab = "Intercept Score",
+     main = "BBC")
+plot(BBC_lm$beta[,2], type = "l",
+     ylab = "Slope Score",
+     main = "BBC")
+acf(BBC_lm$beta[,1],
+    main = "ACF of BBC Intercept")
+acf(BBC_lm$beta[,2],
+    main = "ACF of BBC Slope")
+```
+
+
+```{r, include = T}
+par(mfrow = c(2,2))
+plot(BBC_lm$beta[,1], type = "l",
+     ylab = "Intercept Score",
+     main = "Aaj Tak")
+plot(BBC_lm$beta[,2], type = "l",
+     ylab = "Slope Score",
+     main = "Aaj Tak")
+acf(BBC_lm$beta[,1],
+    main = "ACF of AT Intercept")
+acf(BBC_lm$beta[,2],
+    main = "ACF of AT Slope")
+```
+
+
+## Appendix B: R Codes
+
+### Data Preparation
+ ````{r ref.label="format",eval=FALSE, include = T, echo = T}
+ ```
+
+ ````{r ref.label="Get_words",eval=FALSE, include = T, echo = T}
+ ```
+ ````{r ref.label="Frequencies_counts",eval=FALSE, include = T, echo = T}
+ ```
+
+### Linear Model
+
+ ````{r ref.label="z_mod",eval=FALSE, include = T, echo = T}
+ ```
+ ````{r ref.label="log_lms",eval=FALSE, include = T, echo = T}
+ ```
+
+### Dirichlet-Multinomial Model
+
+ ````{r ref.label="DM_prior",eval=FALSE, include = T, echo = T}
+ ```
+
+ ````{r ref.label="DM_post",eval=FALSE, include = T, echo = T}
+ ```
+ ````{r ref.label="DM_post_pred",eval=FALSE, include = T, echo = T}
+ ```
+
+### Stochastic Estimate
+
+ ````{r ref.label="naive_GT",eval=FALSE, include = T, echo = T}
+ ```
+
+
